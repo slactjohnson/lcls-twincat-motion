@@ -54,6 +54,13 @@ STRUCT
     '}
     bHardwareEnable AT %I*: BOOL;
 
+    // Raw encoder IO for ULINT (Biss-C)
+    nRawEncoderULINT AT %I*: ULINT;
+    // Raw encoder IO for UINT (Relative Encoders)
+    nRawEncoderUINT AT %I*: UINT;
+    // Raw encoder IO for INT (LVDT)
+    nRawEncoderINT AT %I*: INT;
+
     (* Psuedo-hardware *)
 
     // Forward enable EPS summary
@@ -101,8 +108,22 @@ STRUCT
         field: DESC TRUE if gantry ok to move backward
     '}
     bGantryBackwardEnable: BOOL:=FALSE;
+    // Encoder count summary, if linked above
+    {attribute 'pytmc' := '
+        pv: PLC:nEncoderCount
+        io: i
+        field: DESC Count from encoder hardware
+    '}
+    nEncoderCount: UDINT;
 
     (* Settings *)
+    // Name to use for log messages, fast faults, etc.
+    {attribute 'pytmc' := '
+        pv: PLC:sName
+        io: i
+        field: DESC PLC program name
+    '}
+    sName: STRING;
     // If TRUE, we want to enable the motor independently of PMPS or other safety systems.
     {attribute 'pytmc' := '
         pv: PLC:bPowerSelf
@@ -177,6 +198,22 @@ STRUCT
         field: DESC Used internally and by the IOC to start or stop
     '}
     bExecute: BOOL;
+
+    (* Shortcut Commands *)
+    // Start a move to fPosition with fVelocity
+    {attribute 'pytmc' := '
+        pv: PLC:bMoveCmd
+        io: io
+        field: DESC Start a move
+    '}
+    bMoveCmd: BOOL;
+    // Start the homing routine
+    {attribute 'pytmc' := '
+        pv: PLC:bHomeCmd
+        io: io
+        field: DESC Start the homing routine
+    '}
+    bHomeCmd: BOOL;
 
     (* Command Args *)
     // Used internally and by the IOC to pick what kind of move to do
@@ -266,6 +303,22 @@ STRUCT
         field: DESC TRUE if command finished successfully
     '}
     bDone: BOOL;
+    // TRUE if the motor has been homed, or does not need to be homed
+    {attribute 'pytmc' := '
+        pv: PLC:bHomed
+        io: i
+        field: DESC TRUE if the motor has been homed
+    '}
+    bHomed: BOOL;
+    // TRUE if we have safety permission to move
+    {attribute 'pytmc' := '
+        pv: PLC:bSafetyReady
+        io: i
+        field: ONAM FALSE
+        field: ZNAM TRUE
+        field: DESC TRUE if safe to start a move
+    '}
+    bSafetyReady: BOOL;
     // TRUE if we're in an error state
     {attribute 'pytmc' := '
         pv: PLC:bError
@@ -289,6 +342,13 @@ STRUCT
         field: DESC Message to identify the error state
     '}
     sErrorMessage: STRING;
+    // Internal hook for custom error messages
+    sCustomErrorMessage: STRING;
+    // MC_ReadParameterSet Output
+    stAxisParameters: ST_AxisParameterSet;
+    // True if we've updated stAxisParameters at least once
+    bAxisParamsInit: BOOL;
+
     // Misc axis status information for the IOC
     stAxisStatus: DUT_AxisStatus_v0_01;
 END_STRUCT

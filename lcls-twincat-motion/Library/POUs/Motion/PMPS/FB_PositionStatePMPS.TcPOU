@@ -1,0 +1,126 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4022.18">
+  <POU Name="FB_PositionStatePMPS" Id="{7e0e3094-8a3d-4636-a390-eb10e10412f0}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_PositionStatePMPS EXTENDS FB_PositionStatePMPS_Base
+(*
+    Hooks up a position state to an arbiter and an FFO
+        Use BeamParameterTransitionManager to manage transition requests between states
+        Hook up to the inputs/outputs of the state function block
+        Raises FFO if beam parameters are worse than required for current state
+*)
+VAR_IN_OUT
+    fbArbiter: FB_Arbiter;
+    fbFFHWO: FB_HardwareFFOutput;
+END_VAR
+VAR_INPUT
+    stHighBeamThreshold: ST_BeamParams := PMPS_GVL.cstFullBeam;
+END_VAR
+VAR
+    bptm: BeamParameterTransitionManager;
+    ffBeamParamsOk: FB_FastFault;
+    ffZeroRate: FB_FastFault;
+    ffBPTMTimeoutAndMove: FB_FastFault;
+    ffBPTMError: FB_FastFault;
+    ffMaint: FB_FastFault;
+    bFFOxOk: BOOL;
+    bAtSafeState: BOOL;
+    nIter: INT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[Exec();]]></ST>
+    </Implementation>
+    <Action Name="AssertHere" Id="{7db9507d-999c-01b2-1227-c24720a7882a}">
+      <Implementation>
+        <ST><![CDATA[fbArbiter.AddRequest(
+    nReqID := stStateReq.nRequestAssertionID,
+    stReqBP := stStateReq.stBeamParams);]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="ClearAsserts" Id="{a5b537df-5b20-41f7-b1d6-59ce223e5b6e}">
+      <Implementation>
+        <ST><![CDATA[fbArbiter.RemoveRequest(nTransitionAssertionID);
+fbArbiter.RemoveRequest(nUnknownAssertionID);
+FOR nIter := 1 TO MOTION_GVL.MAX_STATES DO
+    fbArbiter.RemoveRequest(arrStates[nIter].nRequestAssertionID);
+END_FOR]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="HandleBPTM" Id="{15e95ede-ce74-498f-962a-8707e856078c}">
+      <Implementation>
+        <ST><![CDATA[bptm(fbArbiter:=fbArbiter,
+     i_TransitionAssertionID:=nTransitionAssertionID,
+     i_stTransitionAssertion:=stTransitionBeam,
+     i_nRequestedAssertionID:=stStateReq.nRequestAssertionID,
+     i_stRequestedAssertion:=stStateReq.stBeamParams,
+     i_xDoneMoving:=bTransDone,
+     stCurrentBeamParameters:=PMPS_GVL.stCurrentBeamParameters,
+     q_xTransitionAuthorized=>bTransitionAuthorized,
+     bDone=>bBPTMDone);]]></ST>
+      </Implementation>
+    </Action>
+    <Action Name="HandleFFO" Id="{6b3afb71-b9c2-4718-aacf-85bf75e65e9c}">
+      <Implementation>
+        <ST><![CDATA[// stBeamNeeded will point to Unknown/No beam if we are out of state bounds or in motion
+// Otherwise we'll have the current state's beam parameters
+
+// Check for bad conditions
+bFFOxOk := F_SafeBPCompare(PMPS_GVL.stCurrentBeamParameters, stBeamNeeded);
+// It is safe to reset automatically if our current state can take full beam.
+// Otherwise we'll have to ask for a user acknowledgement to clear.
+// This avoids rapidly cycling the FFOs on/off
+// You can pass in a different stHighBeamThreshold as an input parameter to customize this behavior
+bAtSafeState := F_SafeBPCompare(stHighBeamThreshold, stBeamNeeded);
+
+// If the beam parameters are wrong, it is a fault! This encompasses all unknown arbiter-related errors.
+ffBeamParamsOk.i_xOK := bFFOxOk;
+ffBeamParamsOk.i_xReset S= bFFOxOk AND bAtSafeState;
+ffBeamParamsOk.i_xReset R= NOT ffBeamParamsOk.i_xOK;
+ffBeamParamsOk(
+    i_DevName:=stMotionStage.sName,
+    i_Desc:='Beam parameter mismatch',
+    i_TypeCode:=16#1000,
+    io_fbFFHWO:=fbFFHWO);
+
+// Trip the beam for zero-rate states. This is a PMPS training wheel and should ultimately be removed.
+// Note: I think this is already redundant
+ffZeroRate(
+    i_xOk := stBeamNeeded.nRate > 0,
+    i_xAutoReset := TRUE,
+    i_DevName := stMotionStage.sName,
+    i_Desc := 'Device requesting zero rate',
+    i_TypeCode := 16#1001,
+    io_fbFFHWO := fbFFHWO);
+
+// Trip the beam for BPTM timeouts if we want to move
+ffBPTMTimeoutAndMove.i_xOK := NOT (bArbiterTimeout AND bMoveOnArbiterTimeout);
+ffBPTMTimeoutAndMove.i_xReset S= bAtSafeState;
+ffBPTMTimeoutAndMove.i_xReset R= NOT ffBPTMTimeoutAndMove.i_xOK;
+ffBPTMTimeoutAndMove(
+    i_DevName := stMotionStage.sName,
+    i_Desc := 'BPTM Timeout',
+    i_TypeCode := 16#1002,
+    io_fbFFHWO := fbFFHWO);
+
+// Trip the beam for BPTM Errors
+ffBPTMError.i_xOK := NOT bptm.bError;
+ffBPTMError.i_xReset S= bptm.bDone AND NOT bptm.bError;
+ffBPTMError.i_xReset R= NOT ffBPTMError.i_xOK;
+ffBPTMError(
+    i_DevName := stMotionStage.sName,
+    i_Desc := 'BPTM error, state transition failed',
+    i_TypeCode := 16#1003,
+    io_fbFFHWO := fbFFHWO);
+
+// Trip the beam for maintenance mode
+ffMaint(
+    i_xOK := NOT bMaintMode,
+    i_xAutoReset := TRUE,
+    i_DevName := stMotionStage.sName,
+    i_Desc := 'Device is in maintenance mode',
+    i_TypeCode := 16#1004,
+    io_fbFFHWO := fbFFHWO);]]></ST>
+      </Implementation>
+    </Action>
+  </POU>
+</TcPlcObject>
